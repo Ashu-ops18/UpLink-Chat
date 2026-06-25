@@ -113,7 +113,7 @@ const Container = styled.div`
     grid-template-columns: 25% 75%;
 
     @media screen and (max-width: 768px) {
-      grid-template-columns: 35% 65%; /* Gives the sidebar more breathing room */
+      grid-template-columns: 35% 65%; 
       width: 100vw; /* Takes up the whole phone screen */
       height: 100vh;
     }
