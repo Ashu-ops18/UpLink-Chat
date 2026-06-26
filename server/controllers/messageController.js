@@ -5,11 +5,11 @@ module.exports.getMessages = async (req, res, next) => {
   try {
     const { from, to, cursor } = req.body;
 
-    // Generate a consistent cache key for this specific conversation (e.g., 'userA-userB')
+    // Sort IDs to guarantee the exact same cache key regardless of who sent the message
     const cacheKey = [from, to].sort().join("-");
 
-    // Check the in-memory cache first for the initial load so the UI feels instant.
-    // We bypass this if the user is scrolling up (using a cursor).
+    // Hit the cache for the initial load to keep the UI snappy.
+    // Ignore the cache if we're paginating deep into the history.
     if (!cursor) {
       const cachedMessages = messageCache.get(cacheKey);
       if (cachedMessages) {
@@ -17,28 +17,28 @@ module.exports.getMessages = async (req, res, next) => {
       }
     }
 
-    // Using cursor pagination (by _id) instead of skip/limit to avoid
-    // heavy collection scans as the database grows.
+    // Cursor-based pagination. skip/limit gets way too slow on massive collections,
+    // so we use the indexed _id to fetch older messages.
     let query = { users: { $all: [from, to] } };
     if (cursor) {
       query._id = { $lt: cursor };
     }
 
-    // Sort by _id (which is auto-indexed) for faster, stable pagination
+    // Grab the newest 50 messages. Sorting by _id is basically free since it's an index.
     const messages = await Messages.find(query).sort({ _id: -1 }).limit(50);
 
-    // Reverse the array so messages render bottom-to-top in the UI
+    // Flip the array so the UI renders them chronologically (oldest at top, newest at bottom)
     messages.reverse();
 
     const projectedMessages = messages.map((msg) => {
       return {
-        id: msg._id, // Expose the ID to serve as the cursor for the frontend's next fetch
+        id: msg._id, // Pass the ID back so the frontend can use it as the cursor for the next fetch
         fromSelf: msg.sender.toString() === from,
         message: msg.message.text,
       };
     });
 
-    // Only cache the first page. No need to bloat server memory with older messages.
+    // Only cache page 1. No point in eating up RAM for deep message history.
     if (!cursor) {
       messageCache.set(cacheKey, projectedMessages);
     }
@@ -59,7 +59,7 @@ module.exports.addMessage = async (req, res, next) => {
       sender: from,
     });
 
-    // Invalidate the cache for this conversation so the next fetch pulls the fresh data
+    // Bust the cache for this chat thread so the next initial load gets the new message
     const cacheKey = [from, to].sort().join("-");
     messageCache.invalidate(cacheKey);
 
