@@ -12,7 +12,7 @@ export default function ChatContainer({ currentChat, socket }) {
   const [isLoading, setIsLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
 
-  // Refs for tracking DOM and fetch state without triggering re-renders
+  // Refs to manage scroll state and prevent duplicate fetches without re-rendering the component
   const isFetchingRef = useRef(false);
   const isInitialMount = useRef(true);
   const blockScrollRef = useRef(true);
@@ -24,12 +24,12 @@ export default function ChatContainer({ currentChat, socket }) {
     JSON.parse(localStorage.getItem("chat-app-current-user")),
   );
 
-  // 1. Initial Load: Fetch the first batch of messages
+  // Fetch the initial page of messages when the chat is selected
   useEffect(() => {
     const fetchInitialMessages = async () => {
       setIsLoading(true);
       isFetchingRef.current = true;
-      blockScrollRef.current = true;
+      blockScrollRef.current = true; // Lock scroll listener during initial load
 
       const response = await axios.post(receiveMessageRoute, {
         from: currentUser._id,
@@ -41,23 +41,29 @@ export default function ChatContainer({ currentChat, socket }) {
       isFetchingRef.current = false;
       setIsLoading(false);
 
-      // Unlock the scroll listener after the DOM has painted and settled
+      // Give the DOM a moment to paint before re-enabling scroll pagination
       setTimeout(() => {
         blockScrollRef.current = false;
       }, 500);
     };
+
     if (currentChat && currentUser) fetchInitialMessages();
   }, [currentChat, currentUser]);
 
-  // 2. Socket Listeners for real-time incoming data
+  // Setup and teardown for real-time socket events
   useEffect(() => {
     if (socket.current) {
       socket.current.on("msg-receive", (msg) => {
         const actualText = msg.message ? msg.message : msg;
-        setMessages((prev) => [...prev, { fromSelf: false, message: actualText }]);
+        setMessages((prev) => [
+          ...prev,
+          { fromSelf: false, message: actualText },
+        ]);
       });
+
       socket.current.on("typing", () => setIsTyping(true));
       socket.current.on("stop-typing", () => setIsTyping(false));
+
       return () => {
         socket.current.off("msg-receive");
         socket.current.off("typing");
@@ -66,26 +72,26 @@ export default function ChatContainer({ currentChat, socket }) {
     }
   }, [socket]);
 
-  // 3. Auto-scroll to bottom logic (Pre-paint)
+  // Handle auto-scrolling behaviors synchronously before the browser paints
   useLayoutEffect(() => {
-    // Only run if the loader is gone and we aren't fetching old history
     if (!isFetchingRef.current && !isLoading && chatBoxRef.current) {
       if (isInitialMount.current) {
-        // First load: Instantly force the scrollbar to the absolute bottom BEFORE the screen paints
+        // Snap to the bottom immediately on first load
         chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight;
         isInitialMount.current = false;
       } else {
-        // Live messages: Smooth scroll to the new message anchor
+        // Smooth scroll for new incoming/outgoing messages
         scrollRef.current?.scrollIntoView({ behavior: "smooth" });
       }
     }
   }, [messages, isTyping, isLoading]);
 
-  // 4. Infinite Scroll Pagination (Older Messages)
+  // Paginate older messages when the user scrolls near the top
   const handleScroll = async (e) => {
     if (blockScrollRef.current) return;
     if (e.target.scrollHeight <= e.target.clientHeight) return;
 
+    // Threshold of 10px from the top to trigger fetch
     if (
       e.target.scrollTop <= 10 &&
       hasMore &&
@@ -94,10 +100,10 @@ export default function ChatContainer({ currentChat, socket }) {
     ) {
       isFetchingRef.current = true;
 
-      // Snapshot the container height BEFORE adding older messages
+      // Save current scroll height so we can adjust position after new elements render
       const previousScrollHeight = e.target.scrollHeight;
-
       const oldestMessageId = messages[0].id;
+
       const response = await axios.post(receiveMessageRoute, {
         from: currentUser._id,
         to: currentChat._id,
@@ -109,34 +115,32 @@ export default function ChatContainer({ currentChat, socket }) {
 
         setMessages((prev) => {
           const combined = [...olderMessages, ...prev];
-          // Deduplicate messages by ID in case a socket event and HTTP request overlapped
+          // Ensure no duplicate messages sneak in from race conditions
           return Array.from(
             new Map(combined.map((msg) => [msg.id, msg])).values(),
           );
         });
 
-        // Wait for React to paint the new messages to the DOM
+        // Wait for render, then offset the scroll position to prevent UI jumping
         setTimeout(() => {
-          // Calculate how much the container grew
           const newScrollHeight = e.target.scrollHeight;
-
-          // Push the scrollbar down by exactly that amount so the view doesn't jump
           e.target.scrollTop = newScrollHeight - previousScrollHeight;
         }, 50);
       }
 
       if (response.data.length < 50) {
-        setHasMore(false);
+        setHasMore(false); // Reached the end of chat history
       }
 
+      // Debounce the next fetch
       setTimeout(() => {
         isFetchingRef.current = false;
       }, 500);
     }
   };
 
+  // Optimistically render the message while syncing with backend/socket
   const handleSendMsg = async (msg) => {
-    // Optimistic UI Update
     await axios.post(sendMessageRoute, {
       from: currentUser._id,
       to: currentChat._id,
@@ -200,6 +204,7 @@ export default function ChatContainer({ currentChat, socket }) {
             </div>
           )}
 
+          {/* Anchor div used for auto-scrolling to the bottom */}
           <div ref={scrollRef}></div>
         </div>
       )}
